@@ -1,2 +1,17 @@
 Projekt 1
+Informacje ogólne:
+1. Projekty pisane są w grupach 2-4 osobowych.
+2. Odbiór projektu polega na dostarczeniu kodu źródłowego (z komentarzami) oraz sprawozdania w postaci pliku PDF.
+3. Sprawozdanie powinno zawierać:
+a) dane wykonawców projektu i prowadzącego zajęcia + treść zadania,
+b) opis poszczególnych modułów programu (funkcji i zmiennych globalnych),
+c) zrzuty ekranu działającego programu (demonstracja poszczególnych funkcjonalności),
+d) należy jasno opisać podział pracy.
 
+	Mieć komentarze w kodzie
+	Również opisać kod w sprawozdaniu
+	Po prostu wkleić kod do sprawozdania, chyba że dana funkcja jest długa,to wkleić tylko część.
+	Opisanie funkcji - co zwraca, parametry, co robi.
+	Konkretnie kto czym się zajął (np. sprawozdanie, kod, funkcje, etc.), można podać w procentach.
+	Oddać kod w pliku/plikach C (i tylko C) i sprawozdanie.
+	Wystarczy R. Love – „Linux. Programowanie systemowe” oraz M. Mitchell – „Linux. Programowanie dla zaawansowanych”, szczególnie te pierwsze.
