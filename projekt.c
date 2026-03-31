@@ -9,16 +9,19 @@
 
 // Main
 int main(int argc, char *argv[]) {
-	// Program powinien był otrzymać ścieżkę źródłową i ścieżkę docelową. Jeśli nie otrzymał zwracamy błąd i kończymy program.
+	// Program powinien był otrzymać ścieżkę źródłową i ścieżkę docelową. Jeśli nie otrzymał, zwracamy błąd i kończymy program.
 	if (argc < 2) {
 		perror("Za mało argumentów!\n Format: ./program /ścieżka/do/źródła /ścieżka/do/celu (argumenty dodatkowe)");
 		exit(EXIT_FAILURE);
 	}
 
 
+	// Sprawdzenie poprawności podanych argumentów
+	//
 	// Tu zostaną zapisane informacje o danym pliku, otrzymane poprzez stat()
 	struct stat statb;
 
+	// Ścieżka źródłowa
 	// Próba odczytania informacji o katalogu na ścieżce źródłowej. W przypadku niepowodzenia (stat zwraca '-1'), program kończy się.
 	if (stat(argv[1], &statb) == -1) {
 		perror("Błąd stat()!\n");
@@ -30,6 +33,7 @@ int main(int argc, char *argv[]) {
 		exit(EXIT_FAILURE);
 	}
 
+	// Ścieżka docelowa
 	// Próba odczytania informacji o katalogu na ścieżce docelowej. W przypadku niepowodzenia (stat zwraca '-1'), program kończy się.
 	if (stat(argv[2], &statb) == -1) {
 		perror("Błąd stat()!\n");
@@ -42,8 +46,18 @@ int main(int argc, char *argv[]) {
 	}
 
 
-	// Podane argumenty są poprawne, więc zamieniamy programu w demona za pomocą Linuxowej funkcji deamon()
-	// int status = deamon(0, 0);
+	// Skoro program nie zakończył się, czyli dane argumenty są poprawne,
+	// więc zamieniamy programu w demona za pomocą Linuxowej funkcji deamon()
+	int status = deamon(0, 0);
+
+	// Główna pętla programu
+	while(1) {
+		// Demon śpi przez 5 minut (300s)
+		sleep(300);
+
+		// Po śnie, demon porównuje katalogi; wykonuje kopiowanie, usuwanie, etc.
+		
+	}
 
 
 	return 0;
