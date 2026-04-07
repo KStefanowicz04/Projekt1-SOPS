@@ -1,15 +1,17 @@
 #include <iostream>
-#include <unistd.h>   // getopt
+#include <unistd.h>   // getopt, sleep
 #include <sys/stat.h> // stat
 #include <string>
+#include <syslog.h>   // logowanie do syslog
+#include <signal.h>   
 
 using namespace std;
 
-// struktura config
+
 struct Config {
     string sourcePath;
     string destPath;
-    int sleepTime = 300; // domyślnie 5 minut
+    int sleepTime = 300; 
     bool recursive = false;
     int mmapThreshold = 0;
 };
@@ -74,8 +76,18 @@ Config parseArguments(int argc, char* argv[]) {
     return config;
 }
 
+// funkcja logowania do syslog
+void log_event(const char* message) {
+    openlog("ProjektDemon", LOG_PID | LOG_CONS, LOG_USER); // otwiera syslog
+    syslog(LOG_INFO, "%s", message);                  // wysyła wiadomość
+    closelog();                                       // zamyka połączenie
+}
+
 int main(int argc, char* argv[]) {
     Config config = parseArguments(argc, argv);
+
+    // logowanie startu programu
+    log_event("Daemon start");
 
     cout << "Source: " << config.sourcePath << endl;
     cout << "Destination: " << config.destPath << endl;
@@ -84,8 +96,10 @@ int main(int argc, char* argv[]) {
     cout << "Mmap threshold: " << config.mmapThreshold << endl;
 
     while (1) {
+        log_event("Entering sleep");  // log przed pętlą/sleep
         cout << "Śpię..." << endl;
         sleep(config.sleepTime);
+        log_event("Waking up");       // log po przebudzeniu
     }
 
     return 0;
