@@ -5,19 +5,19 @@
 #include <sys/types.h>
 
 /*
- * Copy one file from src_path to dst_path.
- * For files larger than mmap_threshold, uses mmap()+write().
- * For smaller files, uses read()+write().
- * On success keeps destination timestamps equal to source timestamps.
- * Returns 0 on success, -1 on failure (errno is set).
+ * Kopiuje pojedynczy plik z src_path do dst_path.
+ * Dla duzych plikow (>= mmap_threshold) uzywa mmap()+write().
+ * Dla mniejszych plikow uzywa read()+write().
+ * Po skopiowaniu ustawia czasy pliku docelowego jak w zrodle.
+ * Zwraca 0 przy sukcesie, -1 przy bledzie (ustawia errno).
  */
 int copy_file_with_threshold(const char *src_path, const char *dst_path, off_t mmap_threshold);
 
 /*
- * Remove a path from destination tree.
- * If recursive is true and path is a directory, remove all nested contents.
- * If recursive is false, directory removal only works for empty directories.
- * Returns 0 on success, -1 on failure (errno is set).
+ * Usuwa sciezke z drzewa docelowego.
+ * Gdy recursive=true i sciezka jest katalogiem, usuwa zawartosc rekurencyjnie.
+ * Gdy recursive=false, katalog moze byc usuniety tylko jesli jest pusty.
+ * Zwraca 0 przy sukcesie, -1 przy bledzie (ustawia errno).
  */
 int remove_path_sync(const char *path, bool recursive);
 

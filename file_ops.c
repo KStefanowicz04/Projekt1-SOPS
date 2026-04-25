@@ -15,6 +15,7 @@
 
 #define COPY_BUFFER_SIZE 65536
 
+/* Zapisuje caly bufor, nawet gdy write() zapisze tylko czesc danych. */
 static int write_all(int fd, const char *buf, size_t count) {
     size_t total = 0;
 
@@ -42,6 +43,7 @@ static int write_all(int fd, const char *buf, size_t count) {
     return 0;
 }
 
+/* Ustawia atime/mtime pliku docelowego na wartosci ze zrodla. */
 static int apply_src_timestamps(const char *dst_path, const struct stat *src_st) {
     struct timespec times[2];
 
@@ -51,6 +53,7 @@ static int apply_src_timestamps(const char *dst_path, const struct stat *src_st)
     return utimensat(AT_FDCWD, dst_path, times, 0);
 }
 
+/* Kopiowanie malego pliku metoda read/write. */
 static int copy_small_read_write(const char *src_path, const char *dst_path, const struct stat *src_st) {
     int src_fd = -1;
     int dst_fd = -1;
@@ -113,6 +116,7 @@ cleanup:
     return result;
 }
 
+/* Kopiowanie duzego pliku: mmap zrodla + write do celu. */
 static int copy_large_mmap_write(const char *src_path, const char *dst_path, const struct stat *src_st) {
     int src_fd = -1;
     int dst_fd = -1;
@@ -169,6 +173,7 @@ cleanup:
     return result;
 }
 
+/* Wybiera metode kopiowania zaleznie od progu mmap_threshold. */
 int copy_file_with_threshold(const char *src_path, const char *dst_path, off_t mmap_threshold) {
     struct stat src_st;
 
@@ -198,6 +203,7 @@ int copy_file_with_threshold(const char *src_path, const char *dst_path, off_t m
     return copy_small_read_write(src_path, dst_path, &src_st);
 }
 
+/* Rekurencyjnie usuwa katalog i cala jego zawartosc. */
 static int remove_path_recursive(const char *path) {
     struct stat st;
 
@@ -257,6 +263,7 @@ static int remove_path_recursive(const char *path) {
     return rmdir(path);
 }
 
+/* Usuwa plik lub katalog (opcjonalnie rekurencyjnie). */
 int remove_path_sync(const char *path, bool recursive) {
     struct stat st;
 
