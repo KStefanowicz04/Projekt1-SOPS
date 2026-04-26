@@ -6,58 +6,14 @@
 #include <sys/stat.h>  // Komenda stat() do pobrania informacji o pliku/katalogu na danej ścieżce
 #include <sys/sysmacros.h>
 #include <time.h>
+#include "file_ops.h"  // Funkcja z plików file_ops
+#include <dirent.h>
+#include <errno.h>
+#include <syslog.h>
+#include <utime.h>
+#include <string.h>
+#include <linux/limits.h>
 
-  //Rekurencyjnie usuwa katalog wraz z całą jego zawartością (pliki i podkatalogi).
-int remove_directory_recursive(const char *path) {
-    DIR *d = opendir(path);      // Próba otwarcia strumienia katalogu
-    size_t path_len = strlen(path);
-    int r = -1;                  // Zmienna przechowująca status operacji (-1 to błąd)
-
-    if (d) {
-        struct dirent *p;
-        r = 0;                   // Katalog otwarty pomyślnie, resetujemy status na 0
-
-        // Pętla czytająca wszystkie wpisy w katalogu
-        while (!r && (p = readdir(d))) {
-            int r2 = -1;
-            char *buf;
-            size_t len;
-
-            // ignoruj "." i ".." aby nie wyjść poza usuwany katalog
-            if (!strcmp(p->d_name, ".") || !strcmp(p->d_name, "..")) continue;
-
-            // Obliczanie długości nowej ścieżki: katalog + nazwa pliku + '\0'
-            len = path_len + strlen(p->d_name) + 2; 
-            buf = malloc(len);   // Dynamiczna alokacja bufora na ścieżkę
-
-            if (buf) {
-                struct stat statbuf;
-                // Składanie pełnej ścieżki do elementu
-                snprintf(buf, len, "%s/%s", path, p->d_name);
-
-                // Pobranie informacji o pliku/katalogu
-                if (!lstat(buf, &statbuf)) {
-                    if (S_ISDIR(statbuf.st_mode)) {
-                        // Jeśli to katalog wywołanie rekurencyjne (wchodzimy w głąb)
-                        r2 = remove_directory_recursive(buf);
-                    } else {
-                        // Jeśli to plik lub inny typ usuwamy bezpośrednio
-                        r2 = unlink(buf);
-                    }
-                }
-                free(buf);       // Zwolnienie pamięci bufora po użyciu
-            }
-            r = r2;              // Aktualizacja statusu jeśli r2 == -1, pętla zostanie przerwana
-        }
-        closedir(d);             // Zamknięcie strumienia katalogu
-    }
-
-    // Jeśli zawartość została usunięta pomyślnie (r == 0), usuwamy sam obecnie pusty katalog
-    if (!r) {
-        r = rmdir(path);
-    }
-
-    return r;  
 /**
  * Główna funkcja synchronizująca drzewa katalogów.
  * * @param source_path    Ścieżka do katalogu źródłowego.
@@ -116,10 +72,10 @@ void scan_directory(const char *source_path, const char *target_path, int recurs
                 // Wybór metody kopiowania na podstawie rozmiaru pliku 
                 if (statbuf.st_size < (off_t)threshold) {
                     syslog(LOG_INFO, "Kopiowanie (read/write): %s", entry->d_name);
-                    // copy_read_write(full_src_path, full_dst_path); // Issue #4
+                    copy_file_with_threshold(full_src_path, full_dst_path, threshold);
                 } else {
                     syslog(LOG_INFO, "Kopiowanie (mmap): %s", entry->d_name);
-                    // copy_mmap(full_src_path, full_dst_path); // Issue #4
+                    copy_file_with_threshold(full_src_path, full_dst_path, threshold);
                 }
                 
                 // synchronizacja czasu modyfikacji po skopiowaniu w  obu plikach 
@@ -175,13 +131,17 @@ void scan_directory(const char *source_path, const char *target_path, int recurs
             } 
             // Jeśli katalog jest w celu, a nie ma go w źródle, usuwamy rekurencyjnie
             else if (S_ISDIR(dst_stat.st_mode) && recursive) {
-                if (remove_directory_recursive(check_dst_path) == 0)
+                if (remove_path_sync(check_dst_path, true) == 0)
                     syslog(LOG_INFO, "Usunięto nadmiarowy katalog: %s", target_entry->d_name);
             }
         }
     }
     closedir(target_dir);
 }
+
+
+
+
 // Main
 int main(int argc, char *argv[]) {
 	// Program powinien był otrzymać ścieżkę źródłową i ścieżkę docelową. Jeśli nie otrzymał, zwracamy błąd i kończymy program.
@@ -223,15 +183,15 @@ int main(int argc, char *argv[]) {
 
 	// Skoro program nie zakończył się, czyli dane argumenty są poprawne,
 	// więc zamieniamy programu w demona za pomocą Linuxowej funkcji deamon()
-	int status = deamon(0, 0);
+	int status = daemon(0, 0);
 
 	// Główna pętla programu
 	while(1) {
 		// Demon śpi przez 5 minut (300s)
-		sleep(300);
+		sleep(15);
 
 		// Po śnie, demon porównuje katalogi; wykonuje kopiowanie, usuwanie, etc.
-		
+		scan_directory(argv[1], argv[2], 1, 1024 * 1024);  // przykładowy threshold 1MB
 	}
 
 
