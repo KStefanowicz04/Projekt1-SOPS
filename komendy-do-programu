@@ -8,4 +8,7 @@ Znajduje demona i jego PID:
 ps aux | grep program-projekt
 
 Wypisuje logi systemowe danego demona:
+(jednorazowo)
 sudo journalctl -xe | grep program-projekt
+(stale)
+sudo journalctl -f | grep program-projekt
