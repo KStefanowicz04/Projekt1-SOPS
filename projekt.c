@@ -26,7 +26,7 @@ typedef struct {
     char *destPath;      // Ścieżka docelowa
     int sleepTime;       // Czas spania (domyślnie 100s)
     bool recursive;      // Flaga -R (kopiowanie rekurencyjne)
-    int mmapThreshold;   // Próg mmap 
+    int mmapThreshold;   // Próg mmap (domyslnie 8KB czyli wartość równa 8192)
 } Config;
 
 // Sprawdzenie, czy podana ścieżka jest katalogiem
@@ -41,7 +41,7 @@ bool isDirectory(const char* path) {
 // Parsowanie argumentów
 Config parseArguments(int argc, char* argv[]) {
     // Inicjalizacja domyślna struktury
-    Config config = {NULL, NULL, 100, false, 0};
+    Config config = {NULL, NULL, 100, false, 8192};
     int opt;
 
     // getopt() przetwarza argumenty linii poleceń
@@ -74,19 +74,19 @@ Config parseArguments(int argc, char* argv[]) {
     return config;
 }
 
-// Funkcja logowania do syslog
-void log_event(const char* message) {
-    openlog("ProjektDemon", LOG_PID | LOG_CONS, LOG_USER);
-    syslog(LOG_INFO, "%s", message);
-    closelog();
-}
-
-// Obsługa sygnałów do wybudzania z sleep
+// Obsługa sygnałów do wybudzania z sleep albo zatrzymania procesu demona
 volatile sig_atomic_t wake_up_flag = 0;
 
 void signal_handler(int signo) {
+    // Sygnał zatrzymujący pracę demona
     if (signo == SIGINT || signo == SIGTERM) {
-        log_event("Received signal - waking up");
+        syslog(LOG_INFO, "Otrzymano sygnał SIGTERM; zatrzymanie procesu demona.");
+        exit(0);
+    }
+
+    // Sygnał budzący demona
+    if (signo == SIGUSR1) {
+        syslog(LOG_INFO, "Otrzymano sygnał SIGUSR1; budzenie demona.");
         wake_up_flag = 1;
     }
 }
@@ -222,23 +222,6 @@ void scan_directory(const char *source_path, const char *target_path, int recurs
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // Main; zawiera główną pętlę demona
 int main(int argc, char* argv[]) {
     // Przetwarzanie argumentów podanych przez użytkownika
@@ -246,23 +229,21 @@ int main(int argc, char* argv[]) {
 
     // Program zamieniany jest w Demona, log startu programu
     daemon(0, 0);
-    log_event("Daemon start");
+    syslog(LOG_INFO, "Zamieniono proces w demona");
 
     // Ustawienie obsługi sygnałów
-    signal(SIGINT, signal_handler);
+    signal(SIGINT, signal_handler);  // Sygnału kończące pracę demona ("kill <PID>")
     signal(SIGTERM, signal_handler);
+    signal(SIGUSR1, signal_handler);  // Sygnał kończący pracę demona ("kill -SIGURS1 <PID>")
 
-    printf("Konfiguracja Demona:\n");
-    printf("- Źródło: %s\n", config.sourcePath);
-    printf("- Cel: %s\n", config.destPath);
-    printf("- Czas spania: %d s\n", config.sleepTime);
-    printf("- Rekurencja: %s\n", config.recursive ? "TAK" : "NIE");
-    printf("- Próg mmap: %d bajtów\n", config.mmapThreshold);
+    // Zapisanie konfiguracji demona do syslog
+    syslog(LOG_INFO, "Konfiguracja demona: Źródło - %s; Cel - %s; Czas snu - %ds; Rekurencja - %s; Próg mmap - %d",
+        config.sourcePath, config.destPath, config.sleepTime, config.recursive ? "TAK" : "NIE", config.mmapThreshold);
+
 
     // Główna pętla demona
     while (1) {
-        log_event("Entering sleep mode");
-        printf("Demon śpi... Wyślij SIGINT (Ctrl+C), aby go obudzić.\n");
+        syslog(LOG_INFO, "Uśpiono demona na %d sekund.", config.sleepTime);
 
         // Pętla spania z możliwością przerwania przez sygnał
         for (int i = 0; i < config.sleepTime; ++i) {
@@ -275,68 +256,9 @@ int main(int argc, char* argv[]) {
 
 
         // Po śnie, demon porównuje katalogi; wykonuje kopiowanie, usuwanie, etc.
-        log_event("Waking up");
+        syslog(LOG_INFO, "Obudzono demona.");
 		scan_directory(config.sourcePath, config.destPath, config.recursive, config.mmapThreshold);  // Parametry zostały wcześniej zapisane w config
     }
 
     return 0;
 }
-
-
-
-
-// Main
-// int main(int argc, char *argv[]) {
-// 	// Program powinien był otrzymać ścieżkę źródłową i ścieżkę docelową. Jeśli nie otrzymał, zwracamy błąd i kończymy program.
-// 	if (argc < 2) {
-// 		perror("Za mało argumentów!\n Format: ./program /ścieżka/do/źródła /ścieżka/do/celu (argumenty dodatkowe)");
-// 		exit(EXIT_FAILURE);
-// 	}
-
-
-// 	// Sprawdzenie poprawności podanych argumentów
-// 	//
-// 	// Tu zostaną zapisane informacje o danym pliku, otrzymane poprzez stat()
-// 	struct stat statb;
-
-// 	// Ścieżka źródłowa
-// 	// Próba odczytania informacji o katalogu na ścieżce źródłowej. W przypadku niepowodzenia (stat zwraca '-1'), program kończy się.
-// 	if (stat(argv[1], &statb) == -1) {
-// 		perror("Błąd stat()!\n");
-// 		exit(EXIT_FAILURE);
-// 	}
-// 	// Odczytanie informacji ze statbuf 'statb'; jeśli na podanej ścieżce źródłowej nie ma katalogu, program kończy się.
-// 	if (!S_ISDIR(statb.st_mode)) {
-// 		perror("Ścieżka źródłowa nie wskazuje na katalog!\n");
-// 		exit(EXIT_FAILURE);
-// 	}
-
-// 	// Ścieżka docelowa
-// 	// Próba odczytania informacji o katalogu na ścieżce docelowej. W przypadku niepowodzenia (stat zwraca '-1'), program kończy się.
-// 	if (stat(argv[2], &statb) == -1) {
-// 		perror("Błąd stat()!\n");
-// 		exit(EXIT_FAILURE);
-// 	}
-// 	// Odczytanie informacji ze statbuf 'statb'; jeśli na podanej ścieżce docelowej nie ma katalogu, program kończy się.
-// 	if (!S_ISDIR(statb.st_mode)) {
-// 		perror("Ścieżka docelowa nie wskazuje na katalog!\n");
-// 		exit(EXIT_FAILURE);
-// 	}
-
-
-// 	// Skoro program nie zakończył się, czyli dane argumenty są poprawne,
-// 	// więc zamieniamy programu w demona za pomocą Linuxowej funkcji deamon()
-// 	int status = daemon(0, 0);
-
-// 	// Główna pętla programu
-// 	while(1) {
-// 		// Demon śpi przez 5 minut (300s)
-// 		sleep(15);
-
-// 		// Po śnie, demon porównuje katalogi; wykonuje kopiowanie, usuwanie, etc.
-// 		scan_directory(argv[1], argv[2], 1, 1024 * 1024);  // przykładowy threshold 1MB
-// 	}
-
-
-// 	return 0;
-// }

@@ -1,0 +1,11 @@
+Kompilacja programu:
+gcc projekt.c file_ops.c -o program-projekt -Wall -Wextra
+
+Wywołanie programu:
+./program-projekt -s /home/Cogitator/Desktop/SystemyOperacyjne/Projekt1/folder-zrodlowy -d /home/Cogitator/Desktop/SystemyOperacyjne/Projekt1/folder-docelowy
+
+Znajduje demona i jego PID:
+ps aux | grep program-projekt
+
+Wypisuje logi systemowe danego demona:
+sudo journalctl -xe | grep program-projekt
