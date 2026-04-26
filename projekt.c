@@ -1,18 +1,97 @@
-#include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>  // Komendy Linuxowe; write, fork, etc.
-#include <fcntl.h>  // Komenda open() i jej argumenty
-#include <sys/stat.h>  // Komenda stat() do pobrania informacji o pliku/katalogu na danej ścieżce
+#include <stdlib.h>      // Funkcje standardowe 
+#include <unistd.h>      // Komendy Linuxowe; write, fork, etc.
+#include <fcntl.h>       // Komenda open() i jej argumenty
+#include <sys/stat.h>    // Informacje o plikach i strukturze stat
 #include <sys/sysmacros.h>
 #include <time.h>
-#include "file_ops.h"  // Funkcja z plików file_ops
+#include "file_ops.h"    // Funkcja z plików file_ops
 #include <dirent.h>
 #include <errno.h>
-#include <syslog.h>
+#include <syslog.h>      // Obsługa dziennika systemowego
+#include <signal.h>      // Obsługa sygnałów systemowych
 #include <utime.h>
-#include <string.h>
+#include <string.h>      // Operacje na ciągach znaków
+#include <stdint.h>      // Typ int w C
+#include <stdbool.h>     // Typ boolowski w C 
 #include <linux/limits.h>
+#include <getopt.h>      // Argumenty podawane do programu przez użytkownika
+
+
+
+
+// Struktura Config
+typedef struct {
+    char *sourcePath;    // Ścieżka źródłowa
+    char *destPath;      // Ścieżka docelowa
+    int sleepTime;       // Czas spania (domyślnie 100s)
+    bool recursive;      // Flaga -R (kopiowanie rekurencyjne)
+    int mmapThreshold;   // Próg mmap 
+} Config;
+
+// Sprawdzenie, czy podana ścieżka jest katalogiem
+bool isDirectory(const char* path) {
+    struct stat info;
+    // stat() zwraca 0 przy powodzeniu, pobiera informacje o pliku do struktury info
+    if (stat(path, &info) != 0) return false;
+    // Makro S_ISDIR sprawdza bity trybu (st_mode) pod kątem katalogu
+    return S_ISDIR(info.st_mode);
+}
+
+// Parsowanie argumentów
+Config parseArguments(int argc, char* argv[]) {
+    // Inicjalizacja domyślna struktury
+    Config config = {NULL, NULL, 100, false, 0};
+    int opt;
+
+    // getopt() przetwarza argumenty linii poleceń
+    while ((opt = getopt(argc, argv, "s:d:t:Rm:")) != -1) {
+        switch (opt) {
+            case 's': config.sourcePath = optarg; break; // source
+            case 'd': config.destPath = optarg; break;   // destination
+            case 't': config.sleepTime = atoi(optarg); break; // czas spania
+            case 'R': config.recursive = true; break;    // rekurencja
+            case 'm': config.mmapThreshold = atoi(optarg); break; // próg mmap
+            default:
+                fprintf(stderr, "Użycie: %s -s <src> -d <dst> [-t <time>] [-R] [-m <threshold>]\n", argv[0]);
+                exit(EXIT_FAILURE);
+        }
+    }
+
+    // Walidacja obecności wymaganych argumentów (ścieżka źródłowa i ścieżka docelowa są wymagane)
+    if (config.sourcePath == NULL || config.destPath == NULL) {
+        fprintf(stderr, "Błąd: Nie podano ścieżki źródłowej albo docelowej. \n");
+        fprintf(stderr, "Format programu: ./program -s </ścieżka/do/źródła> -d </ścieżka/do/folderu/docelowego> [-t <czas snu>] [-R] [-m <próg mmap>]\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // Walidacja poprawności ścieżek (czy obie ścieżki są katalogami?)
+    if (!isDirectory(config.sourcePath) || !isDirectory(config.destPath)) {
+        fprintf(stderr, "Błąd: Podane ścieżki nie są katalogami lub nie istnieją!\n");
+        exit(EXIT_FAILURE);
+    }
+
+    return config;
+}
+
+// Funkcja logowania do syslog
+void log_event(const char* message) {
+    openlog("ProjektDemon", LOG_PID | LOG_CONS, LOG_USER);
+    syslog(LOG_INFO, "%s", message);
+    closelog();
+}
+
+// Obsługa sygnałów do wybudzania z sleep
+volatile sig_atomic_t wake_up_flag = 0;
+
+void signal_handler(int signo) {
+    if (signo == SIGINT || signo == SIGTERM) {
+        log_event("Received signal - waking up");
+        wake_up_flag = 1;
+    }
+}
+
+
 
 /**
  * Główna funkcja synchronizująca drzewa katalogów.
@@ -142,58 +221,122 @@ void scan_directory(const char *source_path, const char *target_path, int recurs
 
 
 
-// Main
-int main(int argc, char *argv[]) {
-	// Program powinien był otrzymać ścieżkę źródłową i ścieżkę docelową. Jeśli nie otrzymał, zwracamy błąd i kończymy program.
-	if (argc < 2) {
-		perror("Za mało argumentów!\n Format: ./program /ścieżka/do/źródła /ścieżka/do/celu (argumenty dodatkowe)");
-		exit(EXIT_FAILURE);
-	}
 
 
-	// Sprawdzenie poprawności podanych argumentów
-	//
-	// Tu zostaną zapisane informacje o danym pliku, otrzymane poprzez stat()
-	struct stat statb;
-
-	// Ścieżka źródłowa
-	// Próba odczytania informacji o katalogu na ścieżce źródłowej. W przypadku niepowodzenia (stat zwraca '-1'), program kończy się.
-	if (stat(argv[1], &statb) == -1) {
-		perror("Błąd stat()!\n");
-		exit(EXIT_FAILURE);
-	}
-	// Odczytanie informacji ze statbuf 'statb'; jeśli na podanej ścieżce źródłowej nie ma katalogu, program kończy się.
-	if (!S_ISDIR(statb.st_mode)) {
-		perror("Ścieżka źródłowa nie wskazuje na katalog!\n");
-		exit(EXIT_FAILURE);
-	}
-
-	// Ścieżka docelowa
-	// Próba odczytania informacji o katalogu na ścieżce docelowej. W przypadku niepowodzenia (stat zwraca '-1'), program kończy się.
-	if (stat(argv[2], &statb) == -1) {
-		perror("Błąd stat()!\n");
-		exit(EXIT_FAILURE);
-	}
-	// Odczytanie informacji ze statbuf 'statb'; jeśli na podanej ścieżce docelowej nie ma katalogu, program kończy się.
-	if (!S_ISDIR(statb.st_mode)) {
-		perror("Ścieżka docelowa nie wskazuje na katalog!\n");
-		exit(EXIT_FAILURE);
-	}
 
 
-	// Skoro program nie zakończył się, czyli dane argumenty są poprawne,
-	// więc zamieniamy programu w demona za pomocą Linuxowej funkcji deamon()
-	int status = daemon(0, 0);
-
-	// Główna pętla programu
-	while(1) {
-		// Demon śpi przez 5 minut (300s)
-		sleep(15);
-
-		// Po śnie, demon porównuje katalogi; wykonuje kopiowanie, usuwanie, etc.
-		scan_directory(argv[1], argv[2], 1, 1024 * 1024);  // przykładowy threshold 1MB
-	}
 
 
-	return 0;
+
+
+
+
+
+
+
+
+
+
+
+
+// Main; zawiera główną pętlę demona
+int main(int argc, char* argv[]) {
+    // Przetwarzanie argumentów podanych przez użytkownika
+    Config config = parseArguments(argc, argv);
+
+    // Program zamieniany jest w Demona, log startu programu
+    daemon(0, 0);
+    log_event("Daemon start");
+
+    // Ustawienie obsługi sygnałów
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+
+    printf("Konfiguracja Demona:\n");
+    printf("- Źródło: %s\n", config.sourcePath);
+    printf("- Cel: %s\n", config.destPath);
+    printf("- Czas spania: %d s\n", config.sleepTime);
+    printf("- Rekurencja: %s\n", config.recursive ? "TAK" : "NIE");
+    printf("- Próg mmap: %d bajtów\n", config.mmapThreshold);
+
+    // Główna pętla demona
+    while (1) {
+        log_event("Entering sleep mode");
+        printf("Demon śpi... Wyślij SIGINT (Ctrl+C), aby go obudzić.\n");
+
+        // Pętla spania z możliwością przerwania przez sygnał
+        for (int i = 0; i < config.sleepTime; ++i) {
+            sleep(1); 
+            if (wake_up_flag) {
+                wake_up_flag = 0; // Reset flagi po pobudce sygnałem
+                break;
+            }
+        }
+
+
+        // Po śnie, demon porównuje katalogi; wykonuje kopiowanie, usuwanie, etc.
+        log_event("Waking up");
+		scan_directory(config.sourcePath, config.destPath, config.recursive, config.mmapThreshold);  // Parametry zostały wcześniej zapisane w config
+    }
+
+    return 0;
 }
+
+
+
+
+// Main
+// int main(int argc, char *argv[]) {
+// 	// Program powinien był otrzymać ścieżkę źródłową i ścieżkę docelową. Jeśli nie otrzymał, zwracamy błąd i kończymy program.
+// 	if (argc < 2) {
+// 		perror("Za mało argumentów!\n Format: ./program /ścieżka/do/źródła /ścieżka/do/celu (argumenty dodatkowe)");
+// 		exit(EXIT_FAILURE);
+// 	}
+
+
+// 	// Sprawdzenie poprawności podanych argumentów
+// 	//
+// 	// Tu zostaną zapisane informacje o danym pliku, otrzymane poprzez stat()
+// 	struct stat statb;
+
+// 	// Ścieżka źródłowa
+// 	// Próba odczytania informacji o katalogu na ścieżce źródłowej. W przypadku niepowodzenia (stat zwraca '-1'), program kończy się.
+// 	if (stat(argv[1], &statb) == -1) {
+// 		perror("Błąd stat()!\n");
+// 		exit(EXIT_FAILURE);
+// 	}
+// 	// Odczytanie informacji ze statbuf 'statb'; jeśli na podanej ścieżce źródłowej nie ma katalogu, program kończy się.
+// 	if (!S_ISDIR(statb.st_mode)) {
+// 		perror("Ścieżka źródłowa nie wskazuje na katalog!\n");
+// 		exit(EXIT_FAILURE);
+// 	}
+
+// 	// Ścieżka docelowa
+// 	// Próba odczytania informacji o katalogu na ścieżce docelowej. W przypadku niepowodzenia (stat zwraca '-1'), program kończy się.
+// 	if (stat(argv[2], &statb) == -1) {
+// 		perror("Błąd stat()!\n");
+// 		exit(EXIT_FAILURE);
+// 	}
+// 	// Odczytanie informacji ze statbuf 'statb'; jeśli na podanej ścieżce docelowej nie ma katalogu, program kończy się.
+// 	if (!S_ISDIR(statb.st_mode)) {
+// 		perror("Ścieżka docelowa nie wskazuje na katalog!\n");
+// 		exit(EXIT_FAILURE);
+// 	}
+
+
+// 	// Skoro program nie zakończył się, czyli dane argumenty są poprawne,
+// 	// więc zamieniamy programu w demona za pomocą Linuxowej funkcji deamon()
+// 	int status = daemon(0, 0);
+
+// 	// Główna pętla programu
+// 	while(1) {
+// 		// Demon śpi przez 5 minut (300s)
+// 		sleep(15);
+
+// 		// Po śnie, demon porównuje katalogi; wykonuje kopiowanie, usuwanie, etc.
+// 		scan_directory(argv[1], argv[2], 1, 1024 * 1024);  // przykładowy threshold 1MB
+// 	}
+
+
+// 	return 0;
+// }
