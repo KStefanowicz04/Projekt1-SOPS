@@ -101,123 +101,140 @@ void signal_handler(int signo) {
  * @param threshold      Próg rozmiaru pliku w bajtach, decydujący o metodzie kopiowania (opcja -s).
  */
 void scan_directory(const char *source_path, const char *target_path, int recursive, size_t threshold) {
-    DIR *dir;
-    struct dirent *entry;
-    struct stat statbuf;
-    char full_src_path[PATH_MAX];
-    char full_dst_path[PATH_MAX];
+	DIR *dir;
+	struct dirent *entry;
+	struct stat statbuf;
+	char full_src_path[PATH_MAX];
+	char full_dst_path[PATH_MAX];
+	//Faza 1 Skanowanie źródła i aktualizacja celu=====================================================================
+	// Próba otwarcia katalogu źródłowego
+	dir = opendir(source_path);
+	if (!dir) {
+		// Logowanie błędu krytycznego (np. brak uprawnień lub usunięcie folderu w trakcie pracy)
+		// %m automatycznie pobiera opis błędu z globalnej zmiennej errno
+		syslog(LOG_ERR, "Nie można otworzyć katalogu źródłowego %s: %m", source_path);
+		return;
+	}
 
-    // Otwarcie strumienia katalogu źródłowego
-    dir = opendir(source_path);
-    if (!dir) {
-        // %m w syslog automatycznie wypisuje opis błędu z errno (np. "Permission denied")
-        syslog(LOG_ERR, "Nie można otworzyć katalogu źródłowego %s: %m", source_path);
-        return;
-    }
+	// Odczytywanie kolejnych wpisów w katalogu (pliki, foldery, itd)
+	while ((entry = readdir(dir)) != NULL) {
+		// // Ignorujemy katalog bieżący "." i nadrzędny ".." zapobiega nieskończonej pętli w rekurencji
+		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
 
-    // Skanowanie źródła i aktualizacja celu
-    while ((entry = readdir(dir)) != NULL) {
-        // Ignorowanie "." i ".." zapobiega nieskończonej pętli w rekurencji
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+		// Składanie pełnej ścieżki: katalog_bazowy + / + nazwa_pliku
+		snprintf(full_src_path, sizeof(full_src_path), "%s/%s", source_path, entry->d_name);
+		snprintf(full_dst_path, sizeof(full_dst_path), "%s/%s", target_path, entry->d_name);
 
-        // Budowanie pełnych ścieżek dla źródła i celu
-        snprintf(full_src_path, sizeof(full_src_path), "%s/%s", source_path, entry->d_name);
-        snprintf(full_dst_path, sizeof(full_dst_path), "%s/%s", target_path, entry->d_name);
+		// Pobieranie szczegółowych informacji o elemencie źródłowym (rozmiar, daty, typ)
+		// lstat nie podąża za dowiązaniami symbolicznymi
+		if (lstat(full_src_path, &statbuf) == -1) {
+			syslog(LOG_WARNING, "Nie można pobrać statystyk dla %s: %m", full_src_path);
+			continue;
+		}
 
-        // lstat pobiera informacje o pliku 
-        if (lstat(full_src_path, &statbuf) == -1) continue;
+		// Przypadek A Jeśli napotkany element jest zwykłym plikiem===========================
+		if (S_ISREG(statbuf.st_mode)) {
+			struct stat target_stat;
+			int needs_sync = 0;
 
-        // Jeśli napotkany element jest zwykłym plikiem
-        if (S_ISREG(statbuf.st_mode)) {
-            struct stat target_stat;
-            int needs_sync = 0;
+			// Sprawdzenie, czy plik istnieje w katalogu docelowym
+			if (lstat(full_dst_path, &target_stat) == -1) {
+				if (errno == ENOENT) {
+					// ENOENT = plik nie istnieje,musimy go skopiować
+					syslog(LOG_INFO, "Wykryto nowy plik: %s", entry->d_name);
+					needs_sync = 1;
+				}
+			} else {
+				// Plik istnieje w celu
+				// Porównanie czasu modyfikacji [st_mtime]
+				// Synchronizujemy tylko jeśli źródło jest nowsze niż cel
+				// st_mtime to czas w sekundach. Jeśli źródło jest nowsze (większa liczba), synchronizujemy.
+				if (statbuf.st_mtime > target_stat.st_mtime) {
+					syslog(LOG_INFO, "Plik zmodyfikowany: %s", entry->d_name);
+					needs_sync = 1;
+				}
+			}
+                // Jeśli plik jest nowy lub został zmieniony
+			if (needs_sync) {
+				// Wybieramy strategię kopiowania na podstawie progu (threshold) przekazanego w parametrze -m
+				if (statbuf.st_size < (off_t)threshold) {
+					syslog(LOG_INFO, "Kopiowanie (read/write): %s", entry->d_name);
+				// Wywołanie faktycznej operacji kopiowania danych
+					copy_file_with_threshold(full_src_path, full_dst_path, threshold);
+				} else {
+					syslog(LOG_INFO, "Kopiowanie (mmap): %s", entry->d_name);
+					copy_file_with_threshold(full_src_path, full_dst_path, threshold);
+				}
 
-            // Sprawdzenie, czy plik istnieje w katalogu docelowym
-            if (lstat(full_dst_path, &target_stat) == -1) {
-                if (errno == ENOENT) { // ENOENT = plik nie istnieje
-                    syslog(LOG_INFO, "Wykryto nowy plik: %s", entry->d_name);
-                    needs_sync = 1;
-                }
-            } else {
-                // Porównanie czasu modyfikacji [st_mtime]
-                // Synchronizujemy tylko jeśli źródło jest nowsze niż cel
-                if (statbuf.st_mtime > target_stat.st_mtime) {
-                    syslog(LOG_INFO, "Plik zmodyfikowany: %s", entry->d_name);
-                    needs_sync = 1;
-                }
-            }
+				// Po skopiowaniu plik docelowy ma datę "teraz". Musimy ją nadpisać datą ze źródła,
+                // aby przy następnym skanowaniu funkcja nie uznała ich za różne.
+				struct utimbuf time_data;
+				time_data.actime = statbuf.st_atime;   // Czas ostatniego dostępu
+				time_data.modtime = statbuf.st_mtime;  // Czas ostatniej modyfikacji
+				if (utime(full_dst_path, &time_data) == -1) {
+					syslog(LOG_ERR, "Błąd ustawiania czasu dla %s: %m", full_dst_path);
+				}
+			}
+		}
+		// Przypadek B ===============================================================================
+		// napotkany element jest katalogiem i włączono flagę rekurencji (-R)
+		else if (S_ISDIR(statbuf.st_mode) && recursive) {
+			// Próba stworzenia katalogu w celu z uprawnieniami ze źródła
+			if (mkdir(full_dst_path, statbuf.st_mode) == -1) {
+			    // Jeśli katalog już istnieje, to nie jest błąd, idziemy dalej
+				if (errno != EEXIST) { // Jeśli błąd to nie "katalog już istnieje"
+					syslog(LOG_ERR, "Błąd mkdir %s: %m", full_dst_path);
+					continue;
+				}
+			} else {
+				syslog(LOG_INFO, "Utworzono katalog: %s", full_dst_path);
+			}
+			// Wywołanie rekurencyjne dla podkatalogu
+			scan_directory(full_src_path, full_dst_path, recursive, threshold);
+		}
+	}
+	// Zamykamy strumień katalogu źródłowego
+	closedir(dir);
 
-            if (needs_sync) {
-                // Wybór metody kopiowania na podstawie rozmiaru pliku 
-                if (statbuf.st_size < (off_t)threshold) {
-                    syslog(LOG_INFO, "Kopiowanie (read/write): %s", entry->d_name);
-                    copy_file_with_threshold(full_src_path, full_dst_path, threshold);
-                } else {
-                    syslog(LOG_INFO, "Kopiowanie (mmap): %s", entry->d_name);
-                    copy_file_with_threshold(full_src_path, full_dst_path, threshold);
-                }
-                
-                // synchronizacja czasu modyfikacji po skopiowaniu w  obu plikach 
-                //  przy następnym obudzeniu daty będą identyczne
-                struct utimbuf time_data;
-                time_data.actime = statbuf.st_atime;  
-                time_data.modtime = statbuf.st_mtime; 
-                if (utime(full_dst_path, &time_data) == -1) {
-                    syslog(LOG_ERR, "Błąd ustawiania czasu dla %s: %m", full_dst_path);
-                }
-            }
-        } 
-        // Jeśli napotkany element jest katalogiem i włączono flagę rekurencji (-R)
-        else if (S_ISDIR(statbuf.st_mode) && recursive) {
-            // Próba stworzenia katalogu w celu z uprawnieniami ze źródła
-            if (mkdir(full_dst_path, statbuf.st_mode) == -1) {
-                if (errno != EEXIST) { // Jeśli błąd to nie "katalog już istnieje"
-                    syslog(LOG_ERR, "Błąd mkdir %s: %m", full_dst_path);
-                    continue;
-                }
-            } else {
-                syslog(LOG_INFO, "Utworzono katalog: %s", full_dst_path);
-            }
-            // Wywołanie rekurencyjne dla podkatalogu
-            scan_directory(full_src_path, full_dst_path, recursive, threshold);
-        }
-    }
-    closedir(dir);
+	// Faza 2 =============================================================
+	// Otwieramy katalog docelowy, aby sprawdzić czy nie ma tam "śmieci" (plików usuniętych ze źródła)
+	// Czyszczenie celu usuwanie nadmiarowych plików
+	DIR *target_dir = opendir(target_path);
+	if (!target_dir) return;
 
-    // Czyszczenie celu usuwanie nadmiarowych plików
-    DIR *target_dir = opendir(target_path);
-    if (!target_dir) return;
+	struct dirent *target_entry;
+	while ((target_entry = readdir(target_dir)) != NULL) {
+	    // Ponownie ignorujemy "." i ".."
+		if (strcmp(target_entry->d_name, ".") == 0 || strcmp(target_entry->d_name, "..") == 0) continue;
 
-    struct dirent *target_entry;
-    while ((target_entry = readdir(target_dir)) != NULL) {
-        if (strcmp(target_entry->d_name, ".") == 0 || strcmp(target_entry->d_name, "..") == 0) continue;
+		char check_src_path[PATH_MAX];
+		char check_dst_path[PATH_MAX];
+		// Budujemy ścieżki do sprawdzenia (odwracamy logikę: patrzymy z celu na źródło)
+		snprintf(check_src_path, sizeof(check_src_path), "%s/%s", source_path, target_entry->d_name);
+		snprintf(check_dst_path, sizeof(check_dst_path), "%s/%s", target_path, target_entry->d_name);
 
-        char check_src_path[PATH_MAX];
-        char check_dst_path[PATH_MAX];
-        snprintf(check_src_path, sizeof(check_src_path), "%s/%s", source_path, target_entry->d_name);
-        snprintf(check_dst_path, sizeof(check_dst_path), "%s/%s", target_path, target_entry->d_name);
+		struct stat src_stat;
+		// Jeśli plik istnieje w celu, ale lstat zwraca błąd ENOENT dla ścieżki źródłowej
+		if (lstat(check_src_path, &src_stat) == -1 && errno == ENOENT) {
+			struct stat dst_stat;
+			if (lstat(check_dst_path, &dst_stat) == -1) continue;
 
-        struct stat src_stat;
-        // Sprawdzamy, czy plik z celu istnieje w źródle
-        if (lstat(check_src_path, &src_stat) == -1 && errno == ENOENT) {
-            struct stat dst_stat;
-            if (lstat(check_dst_path, &dst_stat) == -1) continue;
-
-            // Jeśli plik jest w celu, a nie ma go w źródle -> usuwamy
-            if (S_ISREG(dst_stat.st_mode)) {
-                if (unlink(check_dst_path) == 0)
-                    syslog(LOG_INFO, "Usunięto nadmiarowy plik: %s", target_entry->d_name);
-            } 
-            // Jeśli katalog jest w celu, a nie ma go w źródle, usuwamy rekurencyjnie
-            else if (S_ISDIR(dst_stat.st_mode) && recursive) {
-                if (remove_path_sync(check_dst_path, true) == 0)
-                    syslog(LOG_INFO, "Usunięto nadmiarowy katalog: %s", target_entry->d_name);
-            }
-        }
-    }
-    closedir(target_dir);
+			//to znaczy, że element został usunięty ze źródła. Musimy go usunąć z celu.
+			if (S_ISREG(dst_stat.st_mode)) {
+			    // Usuwanie zwykłego pliku
+				if (unlink(check_dst_path) == 0)
+                    syslog(LOG_INFO, "Usunięto plik (nieobecny w źródle): %s", target_entry->d_name);			}
+                // Usuwanie katalogu wymaga usunięcia zawartości temu zastosowany remove_path_sync
+                // true oznacza usuwanie rekurencyjne zawartości podkatalogu
+			else if (S_ISDIR(dst_stat.st_mode) && recursive) {
+				if (remove_path_sync(check_dst_path, true) == 0)
+					syslog(LOG_INFO, "Usunięto nadmiarowy katalog: %s", target_entry->d_name);
+			}
+		}
+	}
+	// Zamykamy strumień katalogu docelowego
+	closedir(target_dir);
 }
-
 
 
 
